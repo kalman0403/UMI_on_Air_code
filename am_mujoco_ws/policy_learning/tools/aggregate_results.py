@@ -241,6 +241,52 @@ def group_conditions(rows: list[dict]) -> list[dict]:
     return out
 
 
+def self_check(rows, conds):
+    """校验汇总产物内部一致（工具自身也可能错，先把口径钉死再给结论）。
+
+    返回 (checks, failures)；checks 是 (项目, 是否通过, 说明) 列表。
+    """
+    checks, fails = [], []
+
+    def chk(name, ok, detail=''):
+        checks.append((name, bool(ok), detail))
+        if not ok:
+            fails.append(f'{name} {detail}')
+
+    total_ep = len(rows)
+    sum_counts = sum(c['n_episodes'] for c in conds)
+    chk('条件表集数合计 = 每集行数', sum_counts == total_ep, f'{sum_counts} vs {total_ep}')
+
+    groups_in_rows = {r['group'] for r in rows}
+    groups_in_conds = {c['group'] for c in conds}
+    chk('每集行都能在条件表里找到', groups_in_rows <= groups_in_conds,
+        f'多出 {sorted(groups_in_rows - groups_in_conds)[:3]}')
+
+    for c in conds:
+        g = c['group']
+        rs = [r for r in rows if r['group'] == g]
+        chk(f'[{g}] n_episodes', c['n_episodes'] == len(rs), f"{c['n_episodes']} vs {len(rs)}")
+        k = sum(1 for r in rs if r.get('success'))
+        chk(f'[{g}] n_success', c['n_success'] == k, f"{c['n_success']} vs {k}")
+        rate = k / len(rs) if rs else 0.0
+        chk(f'[{g}] success_rate', abs(rate - c['success_rate']) < 1e-9)
+        lo, hi = c.get('wilson_lo'), c.get('wilson_hi')
+        chk(f'[{g}] Wilson 区间包含点估计',
+            lo is not None and hi is not None and lo - 1e-9 <= rate <= hi + 1e-9,
+            f'rate={rate:.3f} CI=[{lo},{hi}]')
+        counts = dict(p.split(':') for p in (c.get('outcome_counts') or '').split('|') if p)
+        chk(f'[{g}] 失败模式计数合计 = 集数',
+            sum(int(v) for v in counts.values()) == len(rs), f'{counts} vs {len(rs)}')
+        atts = [r['index_attempts'] for r in rs if r.get('index_attempts') is not None]
+        if atts and c.get('attempts_mean') is not None:
+            m = sum(atts) / len(atts)
+            chk(f'[{g}] attempts_mean', abs(m - c['attempts_mean']) < 1e-6, f'{m:.3f} vs {c["attempts_mean"]:.3f}')
+    legacy = sum(1 for r in rows if r.get('outcome') == 'legacy_unknown')
+    if legacy:
+        checks.append(('提示：旧数据（无法归因）集数', True, f'{legacy} 集为 legacy_unknown'))
+    return checks, fails
+
+
 EPISODE_FIELDS = [
     'group', 'seed', 'episode_id', 'success', 'crashed', 'episode_return', 'highest_reward',
     'num_timesteps', 'episode_duration', 'avg_position_rmse', 'avg_orientation_distance',
@@ -284,6 +330,8 @@ def main():
     ap.add_argument('--out-dir', default=None, help='输出目录（默认 <root>/_aggregate_<label>）')
     ap.add_argument('--label', default=None, help='这次汇总的标签，写进输出目录名')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--self-check', action='store_true',
+                    help='汇总后校验产物内部一致（集数/成功率/Wilson 区间/失败模式计数/attempts 均值）')
     ap.add_argument('--tag-filter', default=None,
                     help='只保留 group/tag 匹配该正则的条件（例：--tag-filter "^(d_|smoke_base)"），'
                          '用于把历史目录排除在矩阵报告之外')
@@ -356,6 +404,15 @@ def main():
     q_text = '\n'.join(q_lines)
     with open(os.path.join(out_dir, 'quality_report.txt'), 'w', encoding='utf-8') as f:
         f.write(q_text + '\n')
+
+    if args.self_check:
+        checks, fails = self_check(all_rows, conds)
+        print('\n自查（汇总产物内部一致）')
+        print('=' * 78)
+        for name, ok, detail in checks:
+            print(f'  {"✅" if ok else "❌"} {name}' + (f'  {detail}' if detail else ''))
+        print('=' * 78)
+        print(('❌ 自检失败：\n  - ' + '\n  - '.join(fails)) if fails else '✅ 自检全部通过')
 
     if not args.quiet:
         print(q_text)
