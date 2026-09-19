@@ -47,8 +47,9 @@ INVALID_IF_NO_DIFFUSION_LOG = (
     'avg_ref_vs_mpc_orient_dist', 'avg_mpc_vs_actual_orient_dist',
 )
 # 只有打了 logging 补丁的数据才会有的字段
+# 只列**确实写进 metrics.json** 的补丁字段：'outcome'/'episode_len' 是派生列或写在
+# condition.json 里，放进来会让所有新数据都被误判成"缺字段"（2026-09-19 实测踩到）。
 NEW_LOGGING_FIELDS = (
-    'outcome', 'failure_reasons', 'episode_len',
     'index_attempts', 'index_restarts', 'first_success_step',
     'reward_series', 'inference_mpc_costs', 'num_timesteps',
 )
