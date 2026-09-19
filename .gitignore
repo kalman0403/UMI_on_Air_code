@@ -1,0 +1,63 @@
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.pyo
+
+.DS_Store
+.env
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Build and distribution artefacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+*/experiment.log
+*/experiment_error.log
+
+# ACADOS-generated artefacts
+am_mujoco_ws/policy_learning/acados_ocp.json
+am_mujoco_ws/**/c_generated_code/
+am_mujoco_ws/am_trajectory_controller/acados/
+
+# Simulation and evaluation outputs
+am_mujoco_ws/**/ablation_results/
+am_mujoco_ws/**/episode_*/
+am_mujoco_ws/**/evaluation_results/
+
+# Large data directories (keep configs/scripts tracked separately)
+data/
+am_mujoco_ws/data/
+
+checkpoints/
+**/checkpoints/
+results/
+**/results/
+checkpoints_broken/
+checkpoints.tar.gz
+hf_model_card.md
+
+# --- Local additions (upstream rules above kept unchanged) ---
+# Code snapshot tarball created for cloud deployment (duplicate of the tree)
+umi_on_air_code.tar.gz
+*.tar.gz
+
+# Weights / recordings that must never enter the repository
+*.ckpt
+*.pt
+*.pth
+*.mp4
+
+# Local evaluation artefacts
+eval/
