@@ -97,14 +97,16 @@ echo "============================================================"
 # ---- 主循环 ----------------------------------------------------------------
 failures=0
 pids=()
-run_one() {  # tag task mode value gsteps rollouts seed ckpt extra
+run_one() {  # tag task mode value gsteps rollouts seed ckpt extra build_suffix
   local tag=$1 task=$2 mode=$3 value=$4 gsteps=$5 rollouts=$6 seed=$7 ckpt=$8 extra=$9
+  local build_suffix=${10:-}
   local out_dir="$RESULTS_ROOT/$tag/seed$seed"
   # 求解器构建目录：同一个 task 的所有条件共用一份（ACADOS 求解器只由任务的 MPC 配置决定，
-  # 与 scale/guidance/disturb 无关）。原先按 tag_seed 隔离会导致每轮都重新编译 C 代码
-  # （实测新建一份要 3~4 分钟；18 轮 ≈ 1 小时纯编译开销）。
-  # 确实需要并发跑同一个 task 时，给每个进程设不同的 ACADOS_BUILD_SUFFIX。
-  local build_dir="$ACADOS_BUILD_ROOT/${task}${ACADOS_BUILD_SUFFIX:-}"
+  # 与 scale/guidance/disturb 无关）。⚠️ 实测更正：本仓库每次运行都会重新生成并编译求解器
+  # （日志开头 30 行 rm/cc），一次冒烟整轮 85 s、其中编译只占十几秒 —— 所以按 task 共用目录
+  # 是为了产物整洁与目录不碎片化，**不是**为了省编译时间（此前提交里的"省 1 小时"估算是错的）。
+  # 并发跑同一个 task 时由主循环自动给每个槽位加 _pN 后缀，避免两个进程写同一份 .so。
+  local build_dir="$ACADOS_BUILD_ROOT/${task}${build_suffix}"
   local log="$LOG_ROOT/${tag}_seed${seed}.log"
 
   if [ -f "$out_dir/experiment_summary.json" ] && [ "$FORCE" = "0" ]; then
@@ -165,10 +167,11 @@ while IFS=$'\t' read -r tag task mode value gsteps rollouts seeds ckpt extra; do
   for seed in "${seed_list[@]}"; do
     if [ "$PARALLEL" -gt 1 ]; then
       while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do wait -n; done
-      run_one "$tag" "$task" "$mode" "$value" "$gsteps" "$rollouts" "$seed" "$ckpt" "$extra" &
+      slot=$(( $(jobs -rp | wc -l) + 1 ))
+      run_one "$tag" "$task" "$mode" "$value" "$gsteps" "$rollouts" "$seed" "$ckpt" "$extra" "_p$slot" &
       pids+=($!)
     else
-      run_one "$tag" "$task" "$mode" "$value" "$gsteps" "$rollouts" "$seed" "$ckpt" "$extra" || failures=$((failures+1))
+      run_one "$tag" "$task" "$mode" "$value" "$gsteps" "$rollouts" "$seed" "$ckpt" "$extra" "" || failures=$((failures+1))
     fi
   done
 done < <(grep -v '^[[:space:]]*$' "$SPEC")
