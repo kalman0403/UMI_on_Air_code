@@ -65,8 +65,16 @@ export MUJOCO_GL=egl
 export PATH="$(dirname "$PY"):$PATH"
 export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
 export KEEP_FAILED_EPISODES=1
-# shellcheck disable=SC1090
-[ "$DRY_RUN" = "0" ] && source "$WS/am_trajectory_controller/setup_ee_mpc.sh"
+# setup_ee_mpc.sh 内部写的是 `LD_LIBRARY_PATH="...:$LD_LIBRARY_PATH"`，
+# 非交互 shell 里该变量常常未定义，配合本脚本的 `set -u` 会直接 `unbound variable` 退出
+# （2026-09-19 冒烟实测踩到）。这里先兜底再临时关掉 -u 取 source。
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+if [ "$DRY_RUN" = "0" ]; then
+  set +u
+  # shellcheck disable=SC1090
+  source "$WS/am_trajectory_controller/setup_ee_mpc.sh"
+  set -u
+fi
 
 cd "$WS/policy_learning" || { echo "❌ 找不到 $WS/policy_learning"; exit 1; }
 
