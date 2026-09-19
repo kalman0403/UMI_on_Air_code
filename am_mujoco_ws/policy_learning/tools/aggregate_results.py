@@ -284,6 +284,9 @@ def main():
     ap.add_argument('--out-dir', default=None, help='输出目录（默认 <root>/_aggregate_<label>）')
     ap.add_argument('--label', default=None, help='这次汇总的标签，写进输出目录名')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--tag-filter', default=None,
+                    help='只保留 group/tag 匹配该正则的条件（例：--tag-filter "^(d_|smoke_base)"），'
+                         '用于把历史目录排除在矩阵报告之外')
     args = ap.parse_args()
 
     if not os.path.isdir(args.root):
@@ -304,6 +307,17 @@ def main():
     if not all_rows:
         print(f'❌ 找到 {len(run_dirs)} 个运行目录，但没有任何 episode_*/metrics.json')
         return 2
+
+    if args.tag_filter:
+        import re as _re
+        before = len(all_rows)
+        all_rows = [r for r in all_rows if _re.search(args.tag_filter, str(r.get('group', '')))]
+        qualities = [q for q in qualities if _re.search(args.tag_filter, str(q.get('group', '')))
+                     or q.get('archived_attempts')]
+        print(f'🔎 --tag-filter {args.tag_filter!r}：{before} → {len(all_rows)} 集')
+        if not all_rows:
+            print('❌ 过滤后没有数据（检查正则）')
+            return 2
 
     conds = group_conditions(all_rows)
     out_dir = args.out_dir or os.path.join(args.root, '_aggregate' + (f'_{args.label}' if args.label else ''))
