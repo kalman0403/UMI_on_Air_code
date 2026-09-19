@@ -48,6 +48,7 @@ INVALID_IF_NO_DIFFUSION_LOG = (
 )
 # 只有打了 logging 补丁的数据才会有的字段
 NEW_LOGGING_FIELDS = (
+    'outcome', 'failure_reasons', 'episode_len',
     'index_attempts', 'index_restarts', 'first_success_step',
     'reward_series', 'inference_mpc_costs', 'num_timesteps',
 )
@@ -62,6 +63,27 @@ def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     center = p + z * z / (2 * n)
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
     return (max(0.0, (center - half) / denom), min(1.0, (center + half) / denom))
+
+
+# 失败模式分类：§C 要求区分"被重启上限截断"与"跑满整集未达标"，
+# 否则 λ 变大后成功率下降的原因无法归因（是策略变差，还是被重启机制截断）。
+FULL_EPISODE_TOL = 0.9          # 步数 ≥ 90% 集长即视为"跑满"
+
+
+def classify_outcome(row, episode_len=3000):
+    """返回失败/成功模式标签（见下方各分支注释）"""
+    if row.get('success'):
+        return 'success'
+    if row.get('crashed'):
+        return 'crash'
+    steps = row.get('num_timesteps')
+    if steps is None:
+        return 'legacy_unknown'
+    if steps == 0:
+        return 'aborted_no_steps'          # 每次尝试都在 step 0 被重启/崩溃掉（如 F_scale_g0）
+    if steps >= FULL_EPISODE_TOL * episode_len:
+        return 'timeout_full_episode'      # 跑满集长仍未达标
+    return 'early_stop_other'              # 提前结束（掉罐等）
 
 
 def load_json(path):
@@ -109,6 +131,7 @@ def collect_run(run_dir: str, root: str) -> tuple[list[dict], dict]:
 
     base = {
         'group': group, 'run_dir': rel, 'seed': seed,
+        'episode_len': cond.get('episode_len'),
         'task_name': cond.get('task_name'), 'mode': cond.get('mode'),
         'scale': cond.get('scale'), 'guidance': cond.get('guidance'),
         'guided_steps': cond.get('guided_steps'), 'disturb': cond.get('disturb'),
@@ -147,7 +170,9 @@ def collect_run(run_dir: str, root: str) -> tuple[list[dict], dict]:
             'has_new_logging': all(k in metrics for k in NEW_LOGGING_FIELDS),
             # 旧数据的"零值陷阱"标记：没开 log_diffusion 时这几个字段结构上就是 0
             'zero_trap_fields': (not cond.get('log_diffusion', False)),
+            'failure_reasons': metrics.get('failure_reasons'),
         })
+        row['outcome'] = classify_outcome(row, cond.get('episode_len') or 3000)
         rows.append(row)
 
     archived = [d for d in os.listdir(run_dir) if RETRY_RE.match(d)]
@@ -186,7 +211,14 @@ def group_conditions(rows: list[dict]) -> list[dict]:
         first_cost = [r['first_inference_mpc_cost'] for r in rs if r.get('first_inference_mpc_cost') is not None]
         max_cost = [r['max_inference_mpc_cost'] for r in rs if r.get('max_inference_mpc_cost') is not None]
         first = rs[0]
+        mode_counts = {}
+        for r in rs:
+            mode_counts[r['outcome']] = mode_counts.get(r['outcome'], 0) + 1
         out.append({
+            'outcome_counts': '|'.join(f'{k}:{v}' for k, v in sorted(mode_counts.items())),
+            'n_timeout_full': mode_counts.get('timeout_full_episode', 0),
+            'n_aborted_no_steps': mode_counts.get('aborted_no_steps', 0),
+            'n_crash': mode_counts.get('crash', 0),
             'group': g, 'n_episodes': n, 'n_success': k,
             'success_rate': k / n if n else 0.0,
             'wilson_lo': lo, 'wilson_hi': hi,
@@ -212,13 +244,16 @@ def group_conditions(rows: list[dict]) -> list[dict]:
 EPISODE_FIELDS = [
     'group', 'seed', 'episode_id', 'success', 'crashed', 'episode_return', 'highest_reward',
     'num_timesteps', 'episode_duration', 'avg_position_rmse', 'avg_orientation_distance',
-    'avg_main_mpc_tracking_cost', 'index_attempts', 'index_restarts', 'first_success_step',
+    'avg_main_mpc_tracking_cost',
+    'outcome', 'failure_reasons', 'episode_len',
+    'index_attempts', 'index_restarts', 'first_success_step',
     'first_inference_mpc_cost', 'avg_inference_mpc_cost', 'max_inference_mpc_cost',
     'task_name', 'mode', 'scale', 'guidance', 'guided_steps', 'disturb', 'log_diffusion',
     'code_commit', 'ckpt_sha256_head1mb', 'metadata_present', 'has_new_logging', 'run_dir',
 ]
 CONDITION_FIELDS = [
     'group', 'n_episodes', 'n_success', 'success_rate', 'wilson_lo', 'wilson_hi',
+    'outcome_counts', 'n_timeout_full', 'n_aborted_no_steps', 'n_crash',
     'return_mean', 'return_std', 'duration_mean_s', 'attempts_mean', 'restarts_mean',
     'total_attempts', 'total_restarts', 'first_success_step_mean',
     'first_mpc_cost_mean', 'max_mpc_cost_mean', 'n_seeds',
@@ -313,7 +348,8 @@ def main():
         print()
         print('条件级汇总（成功率含 Wilson 95% CI）')
         print('=' * 78)
-        hdr = f'{"条件":<22}{"n":>4}{"成功":>6}{"成功率":>9}{"95% CI":>16}{"return±std":>16}{"尝试":>6}{"重启":>6}'
+        hdr = (f'{"条件":<22}{"n":>4}{"成功":>6}{"成功率":>9}{"95% CI":>16}'
+               f'{"return±std":>16}{"尝试":>6}{"重启":>6}  失败模式')
         print(hdr)
         print('-' * 78)
         for c in conds:
@@ -321,7 +357,8 @@ def main():
             ci = f'[{fmt(c["wilson_lo"], 2)},{fmt(c["wilson_hi"], 2)}]'
             print(f'{c["group"][:21]:<22}{c["n_episodes"]:>4}{c["n_success"]:>6}'
                   f'{c["success_rate"]*100:>8.1f}%{ci:>16}{ret:>16}'
-                  f'{fmt(c["attempts_mean"], 2):>6}{fmt(c["restarts_mean"], 2):>6}')
+                  f'{fmt(c["attempts_mean"], 2):>6}{fmt(c["restarts_mean"], 2):>6}  '
+                  f'{c.get("outcome_counts", "")}')
         print('=' * 78)
 
     print(f'\n✅ 已写出:\n  {os.path.join(out_dir, "episodes.csv")}\n'

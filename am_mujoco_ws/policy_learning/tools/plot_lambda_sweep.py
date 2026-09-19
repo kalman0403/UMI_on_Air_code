@@ -123,14 +123,15 @@ def main():
     print('λ 扫描（模式 A：--scale λ --guided_steps 1；λ=0 即基线）')
     print('=' * 104)
     print(f'{"λ":>6}{"条件":>22}{"n":>5}{"成功":>6}{"成功率":>9}{"95% CI":>16}'
-          f'{"尝试":>7}{"重启":>7}{"首代价":>10}{"峰值代价":>11}')
+          f'{"尝试":>7}{"重启":>7}{"首代价":>10}{"峰值代价":>11}   失败模式（§C 归因用）')
     print('-' * 104)
     for l, c in lam:
         ci = f'[{fmt(c.get("wilson_lo"),2)},{fmt(c.get("wilson_hi"),2)}]'
         print(f'{l:>6.2f}{str(c.get("group"))[:21]:>22}{cnt(c["n_episodes"]):>5}{cnt(c["n_success"]):>6}'
               f'{c["success_rate"]*100:>8.1f}%{ci:>16}'
               f'{fmt(c.get("attempts_mean"),2):>7}{fmt(c.get("restarts_mean"),2):>7}'
-              f'{fmt(c.get("first_mpc_cost_mean"),2):>10}{fmt(c.get("max_mpc_cost_mean"),2):>11}')
+              f'{fmt(c.get("first_mpc_cost_mean"),2):>10}{fmt(c.get("max_mpc_cost_mean"),2):>11}   '
+              f'{c.get("outcome_counts", "")}')
     print('=' * 104)
 
     # 按种子配对：同种子下 λ 与基线的成功率之差
@@ -172,7 +173,8 @@ def main():
             f.write(f'λ={l:<5} n={cnt(c["n_episodes"]):<3} 成功={cnt(c["n_success"]):<3} '
                     f'成功率={c["success_rate"]:.3f} Wilson95={ci} '
                     f'attempts={c.get("attempts_mean")} restarts={c.get("restarts_mean")} '
-                    f'first_cost={c.get("first_mpc_cost_mean")} max_cost={c.get("max_mpc_cost_mean")}\n')
+                    f'first_cost={c.get("first_mpc_cost_mean")} max_cost={c.get("max_mpc_cost_mean")} '
+                    f'outcomes={c.get("outcome_counts")}\n')
         if base_rate is not None:
             best = max(lam, key=lambda t: t[1]['success_rate'])
             f.write(f'\n基线成功率={base_rate:.3f}；本批最高 λ={best[0]}（{best[1]["success_rate"]:.3f}）\n')
