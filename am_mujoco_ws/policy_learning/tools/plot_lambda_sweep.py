@@ -54,14 +54,24 @@ def load_from_agg_dir(d: str):
     return rows, conds
 
 
+MIN_N_FOR_SWEEP = 10          # 集数 < 此值的条件不进 λ 序列（如 1 集冒烟），只作旁证
+
+
 def classify(conds):
-    """拆成 (λ 序列, 模式 B 行, 其他行)"""
+    """拆成 (λ 序列, 模式 B 行, 其他行)
+
+    集数太少的条件（冒烟）不参与"最优 λ"判定：否则 1 集 100% 会把趋势线带偏
+    （2026-09-19 实测：smoke_base n=1 曾让"本批最高 λ"错报成 0.0/100%）。
+    """
     lam, modeb, other = [], [], []
     for c in conds:
         mode = (c.get('mode') or '').strip()
         if mode in ('scale', 'baseline'):
             l = c.get('scale') or 0.0
-            lam.append((float(l), c))
+            if (c.get('n_episodes') or 0) < MIN_N_FOR_SWEEP:
+                other.append(c)
+            else:
+                lam.append((float(l), c))
         elif mode == 'guidance':
             modeb.append(c)
         else:
@@ -160,7 +170,7 @@ def main():
                   f'CI=[{fmt(c.get("wilson_lo"),2)},{fmt(c.get("wilson_hi"),2)}] '
                   f'尝试={fmt(c.get("attempts_mean"),2)} 重启={fmt(c.get("restarts_mean"),2)}')
     if other:
-        print(f'\n其余条件 {len(other)} 个（可能是旧数据/无元数据）：'
+        print(f'\n其余条件 {len(other)} 个（集数 < {MIN_N_FOR_SWEEP} 的冒烟 / 旧数据 / 无元数据）：'
               + ', '.join(str(c.get("group"))[:26] for c in other[:6]))
 
     # 结论文本（写文件，便于粘进论文/答复）
