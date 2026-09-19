@@ -26,6 +26,7 @@
 #   bash run_campaign.sh campaign_example.tsv --only scale1.5 # 只跑指定 tag（可多次）
 #   bash run_campaign.sh campaign_example.tsv --force         # 已完成的条件也重跑
 #   PARALLEL=2 bash run_campaign.sh ...                       # 并发 2 个（单卡谨慎！）
+#   ACADOS_BUILD_SUFFIX=_p2 bash run_campaign.sh ...          # 并发同 task 时给每个进程不同的构建目录后缀
 # ============================================================================
 set -u
 
@@ -99,7 +100,11 @@ pids=()
 run_one() {  # tag task mode value gsteps rollouts seed ckpt extra
   local tag=$1 task=$2 mode=$3 value=$4 gsteps=$5 rollouts=$6 seed=$7 ckpt=$8 extra=$9
   local out_dir="$RESULTS_ROOT/$tag/seed$seed"
-  local build_dir="$ACADOS_BUILD_ROOT/${tag}_seed${seed}"
+  # 求解器构建目录：同一个 task 的所有条件共用一份（ACADOS 求解器只由任务的 MPC 配置决定，
+  # 与 scale/guidance/disturb 无关）。原先按 tag_seed 隔离会导致每轮都重新编译 C 代码
+  # （实测新建一份要 3~4 分钟；18 轮 ≈ 1 小时纯编译开销）。
+  # 确实需要并发跑同一个 task 时，给每个进程设不同的 ACADOS_BUILD_SUFFIX。
+  local build_dir="$ACADOS_BUILD_ROOT/${task}${ACADOS_BUILD_SUFFIX:-}"
   local log="$LOG_ROOT/${tag}_seed${seed}.log"
 
   if [ -f "$out_dir/experiment_summary.json" ] && [ "$FORCE" = "0" ]; then
