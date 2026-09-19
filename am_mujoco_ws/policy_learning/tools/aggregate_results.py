@@ -274,9 +274,14 @@ def self_check(rows, conds):
         chk(f'[{g}] Wilson 区间包含点估计',
             lo is not None and hi is not None and lo - 1e-9 <= rate <= hi + 1e-9,
             f'rate={rate:.3f} CI=[{lo},{hi}]')
-        counts = dict(p.split(':') for p in (c.get('outcome_counts') or '').split('|') if p)
-        chk(f'[{g}] 失败模式计数合计 = 集数',
-            sum(int(v) for v in counts.values()) == len(rs), f'{counts} vs {len(rs)}')
+        counts = {k: int(v) for k, v in
+                  (q.split(':') for q in (c.get('outcome_counts') or '').split('|') if q)}
+        actual_counts = {}
+        for r in rs:
+            actual_counts[r['outcome']] = actual_counts.get(r['outcome'], 0) + 1
+        # 只查"合计=集数"会漏掉"某类计数被写错但合计仍对"的情况（负向测试实测漏检），故逐项比对
+        chk(f'[{g}] 失败模式计数逐项一致',
+            counts == actual_counts, f'{counts} vs {actual_counts}')
         atts = [r['index_attempts'] for r in rs if r.get('index_attempts') is not None]
         if atts and c.get('attempts_mean') is not None:
             m = sum(atts) / len(atts)
