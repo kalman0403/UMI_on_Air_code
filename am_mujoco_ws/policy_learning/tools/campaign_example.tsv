@@ -1,0 +1,23 @@
+# 条件表示例 —— 复制后按需改；制表符分隔（不要用空格）
+# tag	task	mode	value	guided_steps	rollouts	seeds	ckpt	extra
+# ---------------------------------------------------------------------------
+# 列含义
+#   tag           条件名（结果目录名 + condition.json 的 tag；汇总脚本按它分组）
+#   task          任务名（uam_cabinet / uam_peg / uam_valve ...）
+#   mode          baseline（不加引导）| scale（模式A，论文 Eq.8）| guidance（模式B，去噪后精修）
+#   value         scale/guidance 的系数（baseline 填 0）
+#   guided_steps  引导步数（模式A：每个 DDIM 步内重复次数，1=论文 Algorithm 1；
+#                 模式B：生效的去噪步数。baseline 填 0）
+#   rollouts      每个种子的集数
+#   seeds         逗号分隔的种子列表（一次进程一个种子；不同条件用同一组种子≈配对比较）
+#   ckpt          '-' = 自动用 $CKPT_ROOT/umi_<task去uam_前缀>/checkpoints/latest.ckpt
+#   extra         追加参数，'-' 表示无（如 --disturb / --log_diffusion）
+# ---------------------------------------------------------------------------
+# 预算提示：uam_cabinet 成功集约 81 s、失败集约 140 s 墙钟，串行 10 集约 20-25 分钟。
+tag	task	mode	value	guided_steps	rollouts	seeds	ckpt	extra
+base_cabinet	uam_cabinet	baseline	0	0	10	0,1,2	-	-
+scale1.5_gs1_cabinet	uam_cabinet	scale	1.5	1	10	0,1,2	-	-
+guid1.5_gs15_cabinet	uam_cabinet	guidance	1.5	15	10	0,1,2	-	-
+base_cabinet_disturb	uam_cabinet	baseline	0	0	10	0,1,2	-	--disturb
+base_peg	uam_peg	baseline	0	0	10	0,1,2	-	-
+base_valve	uam_valve	baseline	0	0	10	0,1,2	-	-

@@ -107,6 +107,14 @@ class EpisodeMetricsTracker:
         # NEW: Main MPC tracking costs (timestep by timestep)
         self.main_mpc_tracking_costs = []  # Store main MPC tracking costs over episode
         
+        # [PATCH logging#2/#3] 逐集过程日志（旧数据里完全缺失的部分）
+        self.inference_mpc_costs = []     # [(step, mpc_cost), ...] 本集（最后一次尝试）每次推理的 MPC 代价
+        self.index_restart_events = []    # [(step, mpc_cost), ...] 本 index 跨尝试累计的重启触发点
+        self.index_attempts = 1           # 本 index 实际尝试次数（含被重启/崩溃/丢弃的尝试）
+        self.index_restarts = 0           # 本 index 被 MPC 代价触发的重启次数
+        self.reward_series = []           # 逐步 reward（0/1），用于定位"第几步达标"
+        self.first_success_step = None    # 首次 reward 达标的步号（None = 全程未达标）
+        
         # Episode summary
         self.num_timesteps = 0  # Track actual simulation timesteps instead of real time
         self.success = False
@@ -633,6 +641,25 @@ class EpisodeMetricsTracker:
             'highest_reward': float(self.highest_reward),
             'max_reward': float(self.max_reward),
             'episode_duration': float(self.episode_duration),
+            'num_timesteps': int(self.num_timesteps),
+            # [PATCH logging#2/#3] 过程日志：重启次数/尝试次数/逐步 reward/每次推理的 MPC 代价
+            'index_attempts': int(self.index_attempts),
+            'index_restarts': int(self.index_restarts),
+            'first_success_step': self.first_success_step,
+            'reward_series': self.reward_series,
+            'inference_mpc_costs': [[int(s), float(c)] for s, c in self.inference_mpc_costs],
+            'index_restart_events': [[int(s), float(c)] for s, c in self.index_restart_events],
+            'avg_inference_mpc_cost': (
+                float(np.mean([c for _, c in self.inference_mpc_costs]))
+                if self.inference_mpc_costs else 0.0
+            ),
+            'max_inference_mpc_cost': (
+                float(np.max([c for _, c in self.inference_mpc_costs]))
+                if self.inference_mpc_costs else 0.0
+            ),
+            'first_inference_mpc_cost': (
+                float(self.inference_mpc_costs[0][1]) if self.inference_mpc_costs else 0.0
+            ),
             'avg_position_rmse': float(self.avg_position_rmse),  # Changed from MSE to RMSE
             'avg_orientation_distance': float(self.avg_orientation_distance),
             'avg_ref_vs_actual_pos_rmse': float(self.avg_ref_vs_actual_pos_rmse),
@@ -1214,6 +1241,11 @@ class ExperimentSummary:
         vanilla_ref_vs_mpc_pos = [ep.get('avg_vanilla_ref_vs_mpc_pos_rmse', 0.0) for ep in self.episode_metrics]
         vanilla_ref_vs_mpc_orient = [ep.get('avg_vanilla_ref_vs_mpc_orient_dist', 0.0) for ep in self.episode_metrics]
         
+        # [PATCH logging#2/#3] 尝试/重启/达标步号：把成功率的"隐含分母"显式化
+        attempts = [ep.get('index_attempts', 1) for ep in self.episode_metrics]
+        restarts = [ep.get('index_restarts', 0) for ep in self.episode_metrics]
+        first_success_steps = [ep.get('first_success_step') for ep in self.episode_metrics]
+        
         summary = {
             'experiment_summary': {
                 'total_episodes': len(self.episode_metrics),
@@ -1244,7 +1276,13 @@ class ExperimentSummary:
                 'avg_vanilla_ref_vs_mpc_pos_rmse': float(np.mean(vanilla_ref_vs_mpc_pos)),
                 'avg_vanilla_ref_vs_mpc_orient_dist': float(np.mean(vanilla_ref_vs_mpc_orient)),
                 'std_vanilla_ref_vs_mpc_pos_rmse': float(np.std(vanilla_ref_vs_mpc_pos)),
-                'std_vanilla_ref_vs_mpc_orient_dist': float(np.std(vanilla_ref_vs_mpc_orient))
+                'std_vanilla_ref_vs_mpc_orient_dist': float(np.std(vanilla_ref_vs_mpc_orient)),
+                # [PATCH logging#2/#3] 尝试与重启统计
+                'total_attempts': int(np.sum(attempts)),
+                'total_restarts': int(np.sum(restarts)),
+                'attempts_per_episode': [int(a) for a in attempts],
+                'restarts_per_episode': [int(r) for r in restarts],
+                'first_success_steps': first_success_steps
             },
             'per_episode_metrics': self.episode_metrics
         }
@@ -1276,7 +1314,10 @@ class ExperimentSummary:
                      'avg_ref_vs_actual_pos_rmse', 'avg_ref_vs_mpc_pos_rmse', 'avg_mpc_vs_actual_pos_rmse',
                      'avg_ref_vs_actual_orient_dist', 'avg_ref_vs_mpc_orient_dist', 'avg_mpc_vs_actual_orient_dist',
                      'avg_vanilla_ref_vs_mpc_pos_rmse', 'avg_vanilla_ref_vs_mpc_orient_dist',
-                     'avg_main_mpc_tracking_cost']
+                     'avg_main_mpc_tracking_cost',
+                     # [PATCH logging#2/#3] 过程列：便于跨条件汇总时对齐"尝试次数/重启次数/达标步号"
+                     'num_timesteps', 'index_attempts', 'index_restarts', 'first_success_step',
+                     'first_inference_mpc_cost', 'avg_inference_mpc_cost', 'max_inference_mpc_cost']
         
         with open(csv_path, 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)

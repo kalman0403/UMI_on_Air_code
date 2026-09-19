@@ -188,9 +188,28 @@ def resolve_checkpoint_path(ckpt_dir: str, provided_path: Optional[str]) -> Opti
     return None
 
 
-def handle_episode_crash(episode_tracker: EpisodeMetricsTracker) -> None:
-    """Handle episode crash by cleaning up episode directory."""
+def handle_episode_crash(episode_tracker: EpisodeMetricsTracker, reason: str = 'crash') -> None:
+    """Handle an aborted attempt: archive its episode directory instead of silently deleting.
+
+    [PATCH logging#3] 原实现直接 rmtree 掉被重试集的目录，导致：
+      (a) 失败尝试的过程数据（视频/轨迹/代价）全部丢失，只剩最后一版的 metrics.json；
+      (b) 磁盘上 episode_id 连续，看不出这一集其实试了 N 次。
+    设 KEEP_FAILED_EPISODES=1 后改为改名归档为 episode_XXX__retry-<reason>-<n>，
+    默认（未设该变量）保持原有删除行为，避免历史脚本产物体积突变。
+    """
     if os.path.exists(episode_tracker.episode_dir):
+        if os.environ.get('KEEP_FAILED_EPISODES', '0') == '1':
+            archive_dir = episode_tracker.episode_dir
+            n = 1
+            while os.path.exists(f'{archive_dir}__retry-{reason}-{n}'):
+                n += 1
+            archive_dir = f'{archive_dir}__retry-{reason}-{n}'
+            try:
+                os.rename(episode_tracker.episode_dir, archive_dir)
+                print(f"📦 Archived aborted attempt → {os.path.basename(archive_dir)} (reason={reason})")
+                return
+            except Exception as e:
+                print(f"⚠️ Archive failed ({e}); falling back to delete")
         import shutil
         shutil.rmtree(episode_tracker.episode_dir, ignore_errors=True)
 
@@ -399,7 +418,17 @@ def eval_bc(config, ckpt_name, save_episode=True):
     log_diffusion = config['log_diffusion']
     guided_steps_param = config.get('guided_steps')
     acados_build_dir = config.get('acados_build_dir', None)
-    set_seed(np.random.randint(1000000))
+    # [PATCH logging#1] 种子接口统一：EVAL_SEED 环境变量优先（与云端一致），否则沿用原来的随机种子。
+    # 设了 EVAL_SEED 才能让不同条件跑同一组种子（近似配对比较）；实际用的种子写进 config，落进 condition.json。
+    _eval_seed_env = os.environ.get('EVAL_SEED')
+    if _eval_seed_env not in (None, ''):
+        eval_seed = int(_eval_seed_env)
+        print(f"🎲 Using fixed seed from EVAL_SEED: {eval_seed}")
+    else:
+        eval_seed = int(np.random.randint(1000000))
+        print(f"🎲 Using random seed (set EVAL_SEED to fix it): {eval_seed}")
+    config['seed'] = eval_seed
+    set_seed(eval_seed)
 
     # Show disturbance status
     if disturbance_enabled:
@@ -522,6 +551,70 @@ def eval_bc(config, ckpt_name, save_episode=True):
     
     os.makedirs(output_dir, exist_ok=True)
 
+    # [PATCH logging#4] 条件元数据：把"这次到底跑了什么条件"固化到 output_dir/condition.json。
+    # 旧数据的最大麻烦就是只靠目录名/命令历史猜参数（例如 action_horizon 到底是 8 还是 16）。
+    try:
+        import hashlib
+        import platform
+        import socket
+        import subprocess
+
+        def _file_sha256_head(path, nbytes=1 << 20):
+            """Hash the first 1 MB of a file (cheap fingerprint of the checkpoint)."""
+            h = hashlib.sha256()
+            with open(path, 'rb') as fh:
+                h.update(fh.read(nbytes))
+            return h.hexdigest()
+
+        try:
+            code_commit = subprocess.check_output(
+                ['git', 'rev-parse', 'HEAD'],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                stderr=subprocess.DEVNULL
+            ).decode().strip()
+        except Exception:
+            code_commit = None
+
+        condition = {
+            'tag': os.environ.get('EVAL_TAG'),
+            'task_name': task_name,
+            'num_rollouts': int(num_rollouts),
+            'mode': ('scale' if config.get('scale', 0.0) else ('guidance' if config.get('guidance', 0.0) else 'baseline')),
+            'scale': config.get('scale', 0.0),
+            'guidance': config.get('guidance', 0.0),
+            'guided_steps': config.get('guided_steps', 0),
+            'disturb': bool(disturbance_enabled),
+            'log_diffusion': bool(log_diffusion),
+            'seed': config.get('seed'),
+            'seed_source': ('EVAL_SEED' if os.environ.get('EVAL_SEED') not in (None, '') else 'random'),
+            'keep_failed_episodes': os.environ.get('KEEP_FAILED_EPISODES', '0') == '1',
+            'ckpt_path': ckpt_path,
+            'ckpt_sha256_head1mb': _file_sha256_head(ckpt_path) if os.path.exists(ckpt_path) else None,
+            'acados_build_dir': acados_build_dir,
+            'action_horizon': int(action_horizon),
+            'obs_down_sample_steps': int(obs_down_sample_steps),
+            'query_frequency': int(query_frequency),
+            'episode_len': int(max_timesteps),
+            'obs_pose_repr': str(obs_pose_repr),
+            'action_pose_repr': str(action_pose_repr),
+            'camera_shape': [int(x) for x in camera_shape],
+            'code_commit': code_commit,
+            'host': socket.gethostname(),
+            'platform': platform.platform(),
+            'python': sys.version.split()[0],
+            'torch': torch.__version__,
+            'cuda': torch.version.cuda,
+            'mujoco_gl': os.environ.get('MUJOCO_GL'),
+            'hf_endpoint': os.environ.get('HF_ENDPOINT'),
+            'started_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        }
+        condition_path = os.path.join(output_dir, 'condition.json')
+        with open(condition_path, 'w') as f:
+            json.dump(condition, f, indent=2, ensure_ascii=False)
+        print(f"🧾 Condition metadata → {condition_path}")
+    except Exception as e:
+        print(f"⚠️ Failed to write condition.json (evaluation continues): {e}")
+
     # Initialize experiment summary tracker
     experiment_summary = ExperimentSummary(output_dir)
 
@@ -593,6 +686,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
     # 若写在 while 体内会被反复清零（实测 1244 次未触发上限）。按 rollout_id 跟踪。
     episode_restart_attempts = 0
     _restart_tracked_rollout_id = None
+    # [PATCH logging#2] 本 index 跨尝试累计的"重启触发"记录：(step, mpc_cost)。
+    # 放在 while 之外、只在新 index 时清空，这样被重启掉的尝试不会把它的代价证据带走。
+    index_restart_events = []
     
     episode_returns = []
     highest_rewards = []
@@ -671,6 +767,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         # [PATCH bug#1] 只在新 index 时清零重启计数（重启用的 continue 会回到这里）
         if rollout_id != _restart_tracked_rollout_id:
             episode_restart_attempts = 0
+            index_restart_events = []
             _restart_tracked_rollout_id = rollout_id
 
         # Initialize episode metrics tracker
@@ -740,6 +837,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
         current_pregrad_trajectory = None
         pregrad_full_buffer = None
         pending_diffusion_analysis = []
+        # [PATCH logging#2] 本次尝试内每次推理的 MPC 跟踪代价：(step, mpc_cost)。
+        # 原来 mpc_cost 只在终端打印，重启一发生就没了；这是"为什么这集被重启"的唯一量化证据。
+        inference_mpc_costs = []
         all_actual_ee_positions = []
         all_actual_ee_quaternions = []
         success_detected = False
@@ -822,9 +922,14 @@ def eval_bc(config, ckpt_name, save_episode=True):
                         policy, obs_dict, env_obs_stacked, action_pose_repr, query_frequency,
                         env, log_diffusion, has_acados_cost
                     )
+                    # [PATCH logging#2] 记录每次推理的 MPC 跟踪代价（旧数据里这项完全缺失）
+                    if has_acados_cost and mpc_cost is not None:
+                        inference_mpc_costs.append((int(step), float(mpc_cost)))
                     
                     # Check MPC cost for restart condition (early in episode only)
                     if has_acados_cost and mpc_cost > MPC_COST_THRESHOLD:
+                        # [PATCH logging#2] 触发点单独记一份（跨尝试累计），供事后判断阈值是否合理
+                        index_restart_events.append((int(step), float(mpc_cost)))
                         if step < MPC_RESTART_WINDOW:
                             print(f"🔄 MPC cost {mpc_cost:.3f} > {MPC_COST_THRESHOLD} at step {step} - restarting episode")
                             episode_restart_mpc = True
@@ -967,7 +1072,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
         if key_flags['discard']:
             print("🔄 Episode discarded by user (will retry same episode index)")
-            handle_episode_crash(episode_tracker)
+            handle_episode_crash(episode_tracker, reason='discard')
             continue
         
         # Handle MPC restart condition (early high cost - retry same episode)
@@ -982,7 +1087,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
             else:
                 print(f"🔄 Episode restarted due to high MPC cost "
                       f"(attempt {episode_restart_attempts}/{MAX_MPC_RESTARTS_PER_ROLLOUT}, will retry same episode index)")
-                handle_episode_crash(episode_tracker)
+                handle_episode_crash(episode_tracker, reason='mpc_restart')
                 continue
         
         if episode_failed_can:
@@ -1016,11 +1121,25 @@ def eval_bc(config, ckpt_name, save_episode=True):
         # A successful episode that crashes still counts as success (no retry needed)
         if episode_crashed and not episode_success:
             print("🔄 Episode crashed – retrying the same index")
-            handle_episode_crash(episode_tracker)
+            handle_episode_crash(episode_tracker, reason='crash')
             continue
         
         if episode_success:
             successful_episode_count += 1
+
+        # [PATCH logging#2/#3] 把过程日志交给 tracker，随 metrics.json 一起落盘。
+        # 注意：inference_mpc_costs 只属于"最后一次尝试"（步号与 timestep_data 对齐）；
+        #       index_restart_events / index_attempts 是整个 index 跨尝试的累计量，
+        #       用于解释"为什么这一集的 denominator 里其实藏了 N 次尝试"。
+        episode_tracker.inference_mpc_costs = inference_mpc_costs
+        episode_tracker.index_restart_events = index_restart_events
+        episode_tracker.index_attempts = episode_restart_attempts + 1
+        episode_tracker.index_restarts = episode_restart_attempts
+        episode_tracker.reward_series = [int(r) for r in rewards]
+        episode_tracker.first_success_step = (
+            int(next(i for i, r in enumerate(rewards) if r >= env_max_reward))
+            if any(r >= env_max_reward for r in rewards) else None
+        )
 
         # Pass all reward-based metrics from main loop to ensure consistency
         episode_tracker.finalize_episode(
@@ -1081,6 +1200,10 @@ def eval_bc(config, ckpt_name, save_episode=True):
     summary_str += f'Average return: {avg_return:.3f}\n'
     if crashed_episodes > 0: summary_str += f'🚨 Crashed episodes: {crashed_episodes}/{total_episodes_this_session} ({crash_rate:.1%})\n'
     if mpc_restart_count > 0: summary_str += f'🔄 MPC restarts: {mpc_restart_count}\n'
+    _attempts_list = [ep.get('index_attempts', 1) for ep in experiment_summary.episode_metrics]
+    if sum(_attempts_list) > len(_attempts_list):
+        summary_str += (f'🔁 Attempts per episode: {_attempts_list} '
+                        f'(total {sum(_attempts_list)} attempts for {len(_attempts_list)} recorded episodes)\n')
     if can_drop_failure_count > 0: summary_str += f'❌ Can drop failures: {can_drop_failure_count}/{total_episodes_this_session}\n'
     summary_str += f'{"="*60}\n'
     
