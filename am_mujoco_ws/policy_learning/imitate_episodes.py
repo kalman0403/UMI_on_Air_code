@@ -72,8 +72,11 @@ DDIM_INFERENCE_STEPS = 16
 VIEWER_CLEANUP_DELAY = 0.1
 
 # MPC cost thresholds for early restart / late failure
-MPC_COST_THRESHOLD = 10.0        # If MPC cost exceeds this, take action
-MPC_RESTART_WINDOW = 500        # Timesteps before switching from restart to failure
+# [PATCH experiment] 允许用环境变量覆盖，用于隔离"高 MPC 代价 ⇒ 重启本集"这一**评估框架**机制的影响
+# （λ 扫描里 attempts 随 λ 单调上升 1.27→10.20，高 λ 的失败很大比例是被这条机制截断的）。
+# 默认值与原行为完全一致：不设环境变量时阈值=10.0、窗口=500 步，一行行为都不变。
+MPC_COST_THRESHOLD = float(os.environ.get('EVAL_MPC_COST_THRESHOLD', 10.0))
+MPC_RESTART_WINDOW = int(os.environ.get('EVAL_MPC_RESTART_WINDOW', 500))
 # [PATCH bug#1] 同一 episode index 的最大重启次数：防止"每次都被判重启 → 无限重跑"（实测 7 分钟 4010 次）
 MAX_MPC_RESTARTS_PER_ROLLOUT = 10
 
@@ -588,6 +591,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
             'seed': config.get('seed'),
             'seed_source': ('EVAL_SEED' if os.environ.get('EVAL_SEED') not in (None, '') else 'random'),
             'keep_failed_episodes': os.environ.get('KEEP_FAILED_EPISODES', '0') == '1',
+            'mpc_cost_threshold': MPC_COST_THRESHOLD,
+            'mpc_restart_window': MPC_RESTART_WINDOW,
             'ckpt_path': ckpt_path,
             'ckpt_sha256_head1mb': _file_sha256_head(ckpt_path) if os.path.exists(ckpt_path) else None,
             'acados_build_dir': acados_build_dir,
