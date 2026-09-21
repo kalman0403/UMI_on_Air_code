@@ -33,6 +33,12 @@ def load(path):
     """
     if os.path.isdir(path):
         path = os.path.join(path, 'metrics.json')
+    if not os.path.exists(path):
+        # 常见错因：把 group 名当成目录名（guardoff 批次在 guardoff/ 子目录下），
+        # 或路径写成了相对路径而当前工作目录不对。给可读错误，而不是 traceback。
+        raise SystemExit(f'❌ 找不到 episode 目录或 metrics.json：{path}\n'
+                         f'   提示：可直接给 episode 目录（含 metrics.json），或给 metrics.json 本身；\n'
+                         f'   可用 find <结果根目录> -name metrics.json | head 先确认路径。')
     with open(path, encoding='utf-8') as f:
         m = json.load(f)
     if 'episode_len' not in m:
