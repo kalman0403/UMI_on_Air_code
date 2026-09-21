@@ -411,6 +411,7 @@ def main():
     with open(os.path.join(out_dir, 'quality_report.txt'), 'w', encoding='utf-8') as f:
         f.write(q_text + '\n')
 
+    self_check_failed = False
     if args.self_check:
         checks, fails = self_check(all_rows, conds)
         print('\n自查（汇总产物内部一致）')
@@ -419,6 +420,7 @@ def main():
             print(f'  {"✅" if ok else "❌"} {name}' + (f'  {detail}' if detail else ''))
         print('=' * 78)
         print(('❌ 自检失败：\n  - ' + '\n  - '.join(fails)) if fails else '✅ 自检全部通过')
+        self_check_failed = bool(fails)
 
     if not args.quiet:
         print(q_text)
@@ -441,7 +443,7 @@ def main():
     print(f'\n✅ 已写出:\n  {os.path.join(out_dir, "episodes.csv")}\n'
           f'  {os.path.join(out_dir, "conditions.csv")}\n'
           f'  {os.path.join(out_dir, "quality_report.txt")}')
-    return 0
+    return 3 if self_check_failed else 0
 
 
 if __name__ == '__main__':
