@@ -587,6 +587,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
             'guidance': config.get('guidance', 0.0),
             'guided_steps': config.get('guided_steps', 0),
             'disturb': bool(disturbance_enabled),
+            # 生效的扰动幅值（受 EVAL_WIND_RANGE / EVAL_TORQUE_RANGE 影响），便于事后核对口径
+            'wind_range': (list(env.task._wind_range) if getattr(env.task, '_wind_range', None) is not None else None),
+            'torque_range': (list(env.task._torque_range) if getattr(env.task, '_torque_range', None) is not None else None),
             'log_diffusion': bool(log_diffusion),
             'seed': config.get('seed'),
             'seed_source': ('EVAL_SEED' if os.environ.get('EVAL_SEED') not in (None, '') else 'random'),

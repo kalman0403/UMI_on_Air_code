@@ -685,8 +685,21 @@ class UAMBaseTask(base.Task):
             self._torque_target = np.zeros(3)
 
             # ranges and dynamics (read from task config, with defaults)
-            self._wind_range   = task_config.get('wind_range', (-8.0, 8.0))     # N
-            self._torque_range = task_config.get('torque_range', (-0.0, 0.0))   # N·m
+            # [PATCH calibration] 允许用环境变量覆盖扰动幅度，用于把风力量级标定到论文口径
+            # （论文：注入噪声模拟硬件上 ~3 cm 的平均跟踪误差）。不设环境变量时行为与原来逐字一致。
+            _wr = os.environ.get('EVAL_WIND_RANGE')          # 半幅，单位 N：如 16 ⇒ (-16, 16)
+            _tr = os.environ.get('EVAL_TORQUE_RANGE')        # 半幅，单位 N·m
+            if _wr not in (None, ''):
+                self._wind_range = (-float(_wr), float(_wr))
+            else:
+                self._wind_range = task_config.get('wind_range', (-8.0, 8.0))     # N
+            if _tr not in (None, ''):
+                self._torque_range = (-float(_tr), float(_tr))
+            else:
+                self._torque_range = task_config.get('torque_range', (-0.0, 0.0))   # N·m
+            print(f"🌬️  disturbance ranges: wind={tuple(self._wind_range)} N, "
+                  f"torque={tuple(self._torque_range)} N·m "
+                  f"(env override: EVAL_WIND_RANGE={_wr!r}, EVAL_TORQUE_RANGE={_tr!r})")
             self._gust_alpha   = 0.02            # smoothing factor
     
     def _set_gripper_state(self, physics, state):
